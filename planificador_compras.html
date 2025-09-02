@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Planificador Saludable (HTML standalone)</title>
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & ReactDOM (CDN) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel (to run JSX in the browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* Scrollbar suavizada para tablas anchas */
+    ::-webkit-scrollbar { height: 10px; width: 10px; }
+    ::-webkit-scrollbar-thumb { background: #94d3ac; border-radius: 9999px; }
+    ::-webkit-scrollbar-track { background: #e6f6ef; }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-lime-50 via-green-50 to-teal-50 text-slate-800">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // Utilidades
+    const getTodayDate = () => new Date().toISOString().split('T')[0];
+    const formatCurrency = (value) => 'S/ ' + (Number(value || 0).toFixed(2));
+    const normalizeString = (str) => (str || '').trim().toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+
+    // Componente gráfico (Chart.js) para líneas y barras
+    function ChartCanvas({ type = 'line', data, options }) {
+      const canvasRef = useRef(null);
+      const chartRef = useRef(null);
+
+      useEffect(() => {
+        if (!canvasRef.current) return;
+        if (chartRef.current) {
+          chartRef.current.destroy();
+          chartRef.current = null;
+        }
+        const ctx = canvasRef.current.getContext('2d');
+        chartRef.current = new Chart(ctx, {
+          type,
+          data,
+          options: options || { responsive: true }
+        });
+        return () => {
+          if (chartRef.current) chartRef.current.destroy();
+        };
+      }, [JSON.stringify(data), JSON.stringify(options), type]);
+
+      return <canvas ref={canvasRef} className="w-full h-64"></canvas>;
+    }
+
+    function App() {
+      // Estado principal
+      const [state, setState] = useState(() => {
+        const saved = localStorage.getItem('planificadorCompras_v3');
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (parsed.version === '3.0') return parsed;
+          } catch {}
+        }
+        return {
+          presupuesto: 150,
+          precios: [
+            { id: 1, fecha: '2025-08-25', tienda: 'Mercado Local', producto: 'Plátano', unidad: 'kg', cantidad: 2.5, precioTotal: 7.50 },
+            { id: 2, fecha: '2025-08-25', tienda: 'Supermercado', producto: 'Manzana', unidad: 'kg', cantidad: 1.5, precioTotal: 9.00 },
+            { id: 3, fecha: '2025-08-28', tienda: 'Supermercado', producto: 'Plátano', unidad: 'kg', cantidad: 2, precioTotal: 6.80 },
+          ],
+          inventario: [
+            { id: 1, producto: 'Tomate', fechaCompra: '2025-08-28', fechaVenc: '2025-09-05' },
+            { id: 2, producto: 'Lechuga', fechaCompra: '2025-08-28', fechaVenc: '2025-09-02' },
+          ],
+          listaCompras: [
+            { id: 1, producto: 'Plátano', cantidad: 3 },
+            { id: 2, producto: 'Manzana', cantidad: 2 },
+            { id: 3, producto: 'Zanahoria', cantidad: 1.5 },
+          ],
+          planSemanal: {
+            'Lunes': { desayuno: 'Papaya', almuerzo: 'Ensalada', snacks: 'Manzana' },
+            'Martes': { desayuno: 'Plátano', almuerzo: 'Sopa de verduras', snacks: 'Naranja' },
+            'Miércoles': { desayuno: 'Jugo de fresa', almuerzo: 'Tomates rellenos', snacks: 'Pera' },
+            'Jueves': { desayuno: 'Avena con arándanos', almuerzo: 'Ensalada', snacks: 'Plátano' },
+            'Viernes': { desayuno: 'Sandía', almuerzo: 'Verduras salteadas', snacks: 'Manzana' },
+            'Sábado': { desayuno: 'Plátano', almuerzo: 'Ensalada de frutas', snacks: 'Mandarina' },
+            'Domingo': { desayuno: 'Melón', almuerzo: 'Pimientos al horno', snacks: 'Uvas' },
+          },
+          version: '3.0'
+        };
+      });
+
+      const [tab, setTab] = useState('dashboard');
+      const [savedToast, setSavedToast] = useState(false);
+      const fileInputRef = useRef(null);
+
+      const saveState = (next) => {
+        setState(next);
+        localStorage.setItem('planificadorCompras_v3', JSON.stringify(next));
+        setSavedToast(true);
+        clearTimeout(saveState._t);
+        saveState._t = setTimeout(() => setSavedToast(false), 2000);
+      };
+
+      // ---- Lógica de negocio ----
+      const findBestPrice = (producto) => {
+        const norm = normalizeString(producto);
+        const relevant = state.precios.filter(p => normalizeString(p.producto) === norm);
+        if (!relevant.length) return { tienda: null, precioUnitario: null };
+        const best = relevant.reduce((b, cur) => {
+          const curU = (Number(cur.cantidad) > 0) ? Number(cur.precioTotal) / Number(cur.cantidad) : Infinity;
+          const bestU = (Number(b.cantidad) > 0) ? Number(b.precioTotal) / Number(b.cantidad) : Infinity;
+          return curU < bestU ? cur : b;
+        });
+        const precioUnitario = (Number(best.cantidad) > 0) ? Number(best.precioTotal) / Number(best.cantidad) : null;
+        return { tienda: best.tienda, precioUnitario };
+      };
+
+      const calculateTotalEstimado = () => {
+        return state.listaCompras.reduce((sum, item) => {
+          const { precioUnitario } = findBestPrice(item.producto);
+          const cantidad = Number(item.cantidad) || 0;
+          const precio = Number(precioUnitario) || 0;
+          return sum + cantidad * precio;
+        }, 0);
+      };
+
+      const calculateGastoReal = () => {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        return state.precios
+          .filter(p => new Date(p.fecha) >= sevenDaysAgo)
+          .reduce((sum, p) => sum + Number(p.precioTotal || 0), 0);
+      };
+
+      const getDaysRemaining = (fechaVenc) => {
+        const today = new Date(getTodayDate());
+        const venc = new Date(fechaVenc);
+        const diff = venc.getTime() - today.getTime();
+        return Math.ceil(diff / (1000 * 60 * 60 * 24));
+      };
+
+      const getPriorityInfo = (days) => {
+        if (days <= 2) return { cls: 'bg-red-100 text-red-800', text: 'Usar YA' };
+        if (days <= 7) return { cls: 'bg-yellow-100 text-yellow-800', text: 'Usar Pronto' };
+        return { cls: 'bg-green-100 text-green-800', text: 'OK' };
+      };
+
+      // ---- Datos para gráficos ----
+      const last7Dates = () => Array.from({ length: 7 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        return d.toISOString().split('T')[0];
+      });
+
+      const chartDataLine = (() => {
+        const days = last7Dates();
+        const gastos = days.map(date =>
+          state.precios.filter(p => p.fecha === date)
+            .reduce((s, p) => s + Number(p.precioTotal || 0), 0)
+        );
+        return {
+          labels: days.map(d => new Date(d).toLocaleDateString('es-PE', { weekday: 'short' })),
+          datasets: [{
+            label: 'Gastos Diarios (S/)',
+            data: gastos,
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16,185,129,0.15)',
+            tension: 0.4,
+            fill: true
+          }]
+        };
+      })();
+
+      const chartDataBar = (() => {
+        const map = {};
+        state.precios.forEach(pr => {
+          const key = (pr.producto || 'Sin nombre').trim();
+          map[key] = (map[key] || 0) + Number(pr.precioTotal || 0);
+        });
+        return {
+          labels: Object.keys(map),
+          datasets: [{
+            label: 'Gasto por Producto (S/)',
+            data: Object.values(map),
+            backgroundColor: ['#10b981','#34d399','#6ee7b7','#a7f3d0','#059669','#047857','#065f46']
+          }]
+        };
+      })();
+
+      // ---- Derivados ----
+      const totalEstimado = calculateTotalEstimado();
+      const gastoReal = calculateGastoReal();
+      const ahorroEstimado = Math.max(0, Number(state.presupuesto || 0) - totalEstimado);
+
+      // ---- Handlers de listas ----
+      const updateItem = (listName, id, field, value) => {
+        const list = [...state[listName]];
+        const idx = list.findIndex(x => x.id === id);
+        if (idx >= 0) list[idx] = { ...list[idx], [field]: value };
+        saveState({ ...state, [listName]: list });
+      };
+      const deleteItem = (listName, id) => {
+        const list = state[listName].filter(x => x.id !== id);
+        saveState({ ...state, [listName]: list });
+      };
+      const addItem = (listName, defaults) => {
+        const list = state[listName];
+        const newId = Math.max(0, ...list.map(i => i.id)) + 1;
+        saveState({ ...state, [listName]: [...list, { id: newId, ...defaults }] });
+      };
+
+      // ---- Exportar / Importar / Limpiar ----
+      const exportData = () => {
+        const dataStr = JSON.stringify(state, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'planificador-compras-' + getTodayDate() + '.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      };
+
+      const onPickFile = () => fileInputRef.current?.click();
+
+      const onImportFile = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const data = JSON.parse(ev.target.result);
+            if (data && data.version && data.precios) {
+              if (confirm('Esto reemplazará todos tus datos actuales. ¿Continuar?')) {
+                saveState(data);
+              }
+            } else {
+              alert('❌ Archivo no válido o corrupto.');
+            }
+          } catch {
+            alert('❌ Error al leer el archivo.');
+          }
+        };
+        reader.readAsText(file);
+        // reset
+        e.target.value = '';
+      };
+
+      const clearAll = () => {
+        if (confirm('¿Seguro que deseas borrar TODOS los datos guardados? Esta acción no se puede deshacer.')) {
+          localStorage.removeItem('planificadorCompras_v3');
+          location.reload();
+        }
+      };
+
+      // ---- UI ----
+      return (
+        <div className="container mx-auto p-4 md:p-8">
+          {/* Toast de guardado */}
+          {savedToast && (
+            <div className="fixed top-4 right-4 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-pulse">
+              ✅ Datos guardados en el navegador
+            </div>
+          )}
+
+          {/* Header */}
+          <header className="text-center mb-8">
+            <div className="flex items-center justify-center gap-3 mb-4">
+              <div className="p-3 bg-gradient-to-br from-green-500 to-emerald-500 rounded-full shadow-lg">
+                <span className="text-white text-2xl">🌿</span>
+              </div>
+              <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-green-700 to-emerald-700 bg-clip-text text-transparent">
+                Planificador Saludable
+              </h1>
+            </div>
+            <p className="text-lg text-green-800/80">Optimiza tus compras, come más fresco y reduce el desperdicio.</p>
+
+            <div className="flex flex-wrap justify-center gap-3 mt-6">
+              <button onClick={exportData} className="px-4 py-2 border rounded-lg border-emerald-300 hover:bg-emerald-100/50 hover:text-emerald-800 shadow-sm">
+                ⬇️ Exportar Datos
+              </button>
+              <button onClick={onPickFile} className="px-4 py-2 border rounded-lg border-emerald-300 hover:bg-emerald-100/50 hover:text-emerald-800 shadow-sm">
+                ⬆️ Importar Datos
+              </button>
+              <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={onImportFile} />
+              <button onClick={clearAll} className="px-4 py-2 border rounded-lg border-red-300 text-red-600 hover:bg-red-100/50 hover:text-red-700 shadow-sm">
+                🗑️ Limpiar Todo
+              </button>
+            </div>
+          </header>
+
+          {/* Tabs */}
+          <div className="w-full">
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 bg-white/60 backdrop-blur-sm rounded-xl p-2 shadow-inner mb-6">
+              {['dashboard','lista','precios','inventario','plan','guia'].map(k => (
+                <button
+                  key={k}
+                  onClick={() => setTab(k)}
+                  className={
+                    'px-3 py-2 rounded-lg text-sm font-medium ' +
+                    (tab === k ? 'bg-white shadow text-emerald-700' : 'hover:bg-white/70 text-slate-700')
+                  }>
+                  {k === 'dashboard' && '📈 Dashboard'}
+                  {k === 'lista' && '🛒 Lista'}
+                  {k === 'precios' && '💲 Precios'}
+                  {k === 'inventario' && '🏠 Inventario'}
+                  {k === 'plan' && '🗓️ Plan'}
+                  {k === 'guia' && '🍎 Guía'}
+                </button>
+              ))}
+            </div>
+
+            {/* === Dashboard === */}
+            {tab === 'dashboard' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  {/* Presupuesto */}
+                  <div className="bg-gradient-to-br from-blue-100 to-blue-200 border border-blue-200 rounded-xl p-4 shadow">
+                    <div className="text-sm font-medium text-blue-800 mb-1">Presupuesto Semanal</div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-bold text-blue-700">S/</span>
+                      <input
+                        type="number"
+                        value={state.presupuesto}
+                        onChange={(e) => saveState({ ...state, presupuesto: parseFloat(e.target.value) || 0 })}
+                        className="text-3xl font-bold bg-transparent border-0 p-0 h-auto focus:ring-0 focus:outline-none text-blue-900 w-28"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-green-100 to-green-200 border border-green-200 rounded-xl p-4 shadow">
+                    <div className="text-sm font-medium text-green-800 mb-1">Total Estimado Compra</div>
+                    <div className="text-3xl font-bold text-green-700">{formatCurrency(totalEstimado)}</div>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-orange-100 to-orange-200 border border-orange-200 rounded-xl p-4 shadow">
+                    <div className="text-sm font-medium text-orange-800 mb-1">Gasto Real (7 días)</div>
+                    <div className="text-3xl font-bold text-orange-700">{formatCurrency(gastoReal)}</div>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-purple-100 to-purple-200 border border-purple-200 rounded-xl p-4 shadow">
+                    <div className="text-sm font-medium text-purple-800 mb-1">Ahorro Estimado</div>
+                    <div className="text-3xl font-bold text-purple-700">{formatCurrency(ahorroEstimado)}</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl p-4">
+                    <div className="text-green-800 font-semibold mb-2">Gastos de los Últimos 7 Días</div>
+                    <ChartCanvas type="line" data={chartDataLine} options={{responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}}/>
+                  </div>
+                  <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl p-4">
+                    <div className="text-green-800 font-semibold mb-2">Gasto por Producto</div>
+                    <ChartCanvas type="bar" data={chartDataBar} options={{responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}}/>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* === Lista de Compras === */}
+            {tab === 'lista' && (
+              <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl">
+                <div className="p-4 border-b">
+                  <div className="text-green-800 font-bold text-lg flex items-center gap-2">🛒 Lista de Compras</div>
+                  <div className="text-sm text-slate-600">Total estimado: <span className="font-bold text-green-700">{formatCurrency(totalEstimado)}</span></div>
+                </div>
+                <div className="p-4 overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b-2 border-green-200">
+                        <th className="p-3 text-left font-semibold text-green-800">Producto</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Cantidad</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Tienda Sugerida</th>
+                        <th className="p-3 text-right font-semibold text-green-800">Precio/u Est.</th>
+                        <th className="p-3 text-right font-semibold text-green-800">Subtotal</th>
+                        <th className="p-3 text-center font-semibold text-green-800">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {state.listaCompras.map(item => {
+                        const { tienda, precioUnitario } = findBestPrice(item.producto);
+                        const subtotal = (Number(item.cantidad) || 0) * (Number(precioUnitario) || 0);
+                        return (
+                          <tr key={item.id} className="border-b border-green-100 hover:bg-green-100/50 transition-colors">
+                            <td className="p-2">
+                              <input value={item.producto} onChange={(e) => updateItem('listaCompras', item.id, 'producto', e.target.value)} className="border border-green-200 rounded px-2 py-1 w-44 focus:outline-none focus:ring-1 focus:ring-green-400"/>
+                            </td>
+                            <td className="p-2 w-32">
+                              <input type="number" step="0.1" value={item.cantidad} onChange={(e) => updateItem('listaCompras', item.id, 'cantidad', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 w-24 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/>
+                            </td>
+                            <td className="p-3 text-green-700 font-medium">{tienda || 'N/A'}</td>
+                            <td className="p-3 text-right">{precioUnitario ? formatCurrency(precioUnitario) : 'N/A'}</td>
+                            <td className="p-3 text-right font-bold text-green-600">{formatCurrency(subtotal)}</td>
+                            <td className="p-2 text-center">
+                              <button onClick={() => deleteItem('listaCompras', item.id)} className="text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-100">Eliminar</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="p-4 border-t">
+                  <button onClick={() => addItem('listaCompras', { producto: '', cantidad: 1 })} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow">
+                    ➕ Añadir Producto
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* === Precios === */}
+            {tab === 'precios' && (
+              <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl">
+                <div className="p-4 border-b">
+                  <div className="text-green-800 font-bold text-lg flex items-center gap-2">💲 Registro de Precios</div>
+                  <div className="text-sm text-slate-600">Registra tus compras para encontrar siempre los mejores precios y alimentar los gráficos.</div>
+                </div>
+                <div className="p-4 overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="border-b-2 border-green-200">
+                      <tr>
+                        <th className="p-3 text-left font-semibold text-green-800">Fecha</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Tienda</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Producto</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Unidad</th>
+                        <th className="p-3 text-right font-semibold text-green-800">Cantidad</th>
+                        <th className="p-3 text-right font-semibold text-green-800">Precio Total</th>
+                        <th className="p-3 text-right font-semibold text-green-800">Precio/u</th>
+                        <th className="p-3 text-center font-semibold text-green-800">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {state.precios.map(item => {
+                        const precioUnitario = (Number(item.cantidad) > 0) ? (Number(item.precioTotal) || 0) / Number(item.cantidad) : 0;
+                        return (
+                          <tr key={item.id} className="border-b border-green-100 hover:bg-green-100/50 transition-colors">
+                            <td className="p-2"><input type="date" value={item.fecha} onChange={(e) => updateItem('precios', item.id, 'fecha', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2"><input value={item.tienda} onChange={(e) => updateItem('precios', item.id, 'tienda', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2"><input value={item.producto} onChange={(e) => updateItem('precios', item.id, 'producto', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2 w-28"><input value={item.unidad} onChange={(e) => updateItem('precios', item.id, 'unidad', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2 w-32"><input type="number" step="0.1" value={item.cantidad} onChange={(e) => updateItem('precios', item.id, 'cantidad', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2 w-32"><input type="number" step="0.01" value={item.precioTotal} onChange={(e) => updateItem('precios', item.id, 'precioTotal', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-3 text-right font-bold text-green-600">{formatCurrency(precioUnitario)}</td>
+                            <td className="p-2 text-center"><button onClick={() => deleteItem('precios', item.id)} className="text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-100">Eliminar</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="p-4 border-t">
+                  <button onClick={() => addItem('precios', { fecha: getTodayDate(), tienda: '', producto: '', unidad: 'kg', cantidad: 1, precioTotal: 0 })} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow">
+                    ➕ Añadir Compra
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* === Inventario === */}
+            {tab === 'inventario' && (
+              <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl">
+                <div className="p-4 border-b">
+                  <div className="text-green-800 font-bold text-lg flex items-center gap-2">🏠 Inventario en Casa</div>
+                  <div className="text-sm text-slate-600">Lleva un control de lo que tienes para evitar comprar de más y reducir el desperdicio.</div>
+                </div>
+                <div className="p-4 overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="border-b-2 border-green-200">
+                      <tr>
+                        <th className="p-3 text-left font-semibold text-green-800">Producto</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Fecha de Compra</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Fecha de Vencimiento</th>
+                        <th className="p-3 text-center font-semibold text-green-800">Días Restantes</th>
+                        <th className="p-3 text-center font-semibold text-green-800">Estado</th>
+                        <th className="p-3 text-center font-semibold text-green-800">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {state.inventario.map(item => {
+                        const days = getDaysRemaining(item.fechaVenc);
+                        const pr = getPriorityInfo(days);
+                        return (
+                          <tr key={item.id} className="border-b border-green-100 hover:bg-green-100/50 transition-colors">
+                            <td className="p-2"><input value={item.producto} onChange={(e) => updateItem('inventario', item.id, 'producto', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2"><input type="date" value={item.fechaCompra} onChange={(e) => updateItem('inventario', item.id, 'fechaCompra', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2"><input type="date" value={item.fechaVenc} onChange={(e) => updateItem('inventario', item.id, 'fechaVenc', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-3 text-center font-bold">{isNaN(days) ? '-' : days}</td>
+                            <td className="p-3 text-center">
+                              <span className={'px-2 py-1 rounded-full text-xs font-semibold ' + pr.cls}>{pr.text}</span>
+                            </td>
+                            <td className="p-2 text-center"><button onClick={() => deleteItem('inventario', item.id)} className="text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-100">Eliminar</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="p-4 border-t">
+                  <button onClick={() => addItem('inventario', { producto: '', fechaCompra: getTodayDate(), fechaVenc: getTodayDate() })} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded shadow">
+                    ➕ Añadir a Inventario
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* === Plan Semanal === */}
+            {tab === 'plan' && (
+              <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl">
+                <div className="p-4 border-b">
+                  <div className="text-green-800 font-bold text-lg flex items-center gap-2">🗓️ Plan de Comidas Semanal</div>
+                  <div className="text-sm text-slate-600">Organiza tus comidas para saber exactamente qué necesitas comprar.</div>
+                </div>
+                <div className="p-4 overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="border-b-2 border-green-200">
+                      <tr>
+                        <th className="p-3 text-left font-semibold text-green-800">Día</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Desayuno</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Almuerzo</th>
+                        <th className="p-3 text-left font-semibold text-green-800">Snacks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(state.planSemanal).map(([dia, comidas]) => (
+                        <tr key={dia} className="border-b border-green-100 hover:bg-green-100/50 transition-colors">
+                          <td className="p-3 font-bold text-green-700">{dia}</td>
+                          <td className="p-2"><input value={comidas.desayuno} onChange={(e) => {
+                            const p = { ...state.planSemanal, [dia]: { ...comidas, desayuno: e.target.value } };
+                            saveState({ ...state, planSemanal: p });
+                          }} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                          <td className="p-2"><input value={comidas.almuerzo} onChange={(e) => {
+                            const p = { ...state.planSemanal, [dia]: { ...comidas, almuerzo: e.target.value } };
+                            saveState({ ...state, planSemanal: p });
+                          }} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                          <td className="p-2"><input value={comidas.snacks} onChange={(e) => {
+                            const p = { ...state.planSemanal, [dia]: { ...comidas, snacks: e.target.value } };
+                            saveState({ ...state, planSemanal: p });
+                          }} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* === Guía === */}
+            {tab === 'guia' && (
+              <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl p-6 space-y-6">
+                <div className="flex gap-4">
+                  <div className="text-2xl">🌱</div>
+                  <div>
+                    <h3 className="font-bold text-lg text-green-800">Planifica tus Comidas</h3>
+                    <p className="text-slate-600">Antes de ir a comprar, decide qué vas a comer durante la semana. Así comprarás solo lo necesario.</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="text-2xl">🧊</div>
+                  <div>
+                    <h3 className="font-bold text-lg text-blue-800">Almacenamiento Inteligente</h3>
+                    <p className="text-slate-600">Guarda las verduras de hoja con una toalla de papel para absorber la humedad. Mantén los tomates y plátanos fuera del refrigerador.</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="text-2xl">💡</div>
+                  <div>
+                    <h3 className="font-bold text-lg text-yellow-800">Compra de Temporada</h3>
+                    <p className="text-slate-600">Los productos de temporada no solo son más baratos, sino también más frescos y sabrosos. ¡Investiga qué está de temporada en tu zona!</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="text-2xl">✨</div>
+                  <div>
+                    <h3 className="font-bold text-lg text-purple-800">Reduce el Desperdicio</h3>
+                    <p className="text-slate-600">Usa los tallos de brócoli o las hojas de zanahoria para caldos. Congela frutas muy maduras para batidos.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
