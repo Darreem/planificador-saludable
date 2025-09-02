@@ -1,9 +1,10 @@
-<!DOCTYPE html>
+# Generate an improved standalone HTML with color-mapped bars, compact charts, and a quick interpretation list.
+html = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Planificador Saludable (HTML standalone)</title>
+  <title>Planificador Saludable (colores por producto)</title>
   <!-- Tailwind (CDN) -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- React & ReactDOM (CDN) -->
@@ -11,10 +12,9 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <!-- Babel (to run JSX in the browser) -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Chart.js -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Chart.js v4 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
   <style>
-    /* Scrollbar suavizada para tablas anchas */
     ::-webkit-scrollbar { height: 10px; width: 10px; }
     ::-webkit-scrollbar-thumb { background: #94d3ac; border-radius: 9999px; }
     ::-webkit-scrollbar-track { background: #e6f6ef; }
@@ -24,15 +24,65 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
+    const { useState, useEffect, useRef, useMemo } = React;
 
     // Utilidades
     const getTodayDate = () => new Date().toISOString().split('T')[0];
     const formatCurrency = (value) => 'S/ ' + (Number(value || 0).toFixed(2));
-    const normalizeString = (str) => (str || '').trim().toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+    const normalize = (str) => (str || '').toLowerCase().trim()
+      .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
 
-    // Componente gráfico (Chart.js) para líneas y barras
-    function ChartCanvas({ type = 'line', data, options }) {
+    // ===== Color mapping por producto =====
+    // Devuelve un color (o gradiente) "natural" según el producto reconocido.
+    function getColorForProduct(label, chartCtx) {
+      const l = normalize(label);
+      // frutas
+      if (/(manzana|apple)/.test(l)) return '#ef4444';               // rojo
+      if (/(platano|banana|banano)/.test(l)) return '#facc15';        // amarillo
+      if (/(sandia|watermelon)/.test(l)) {
+        // Gradiente rojo -> verde
+        const { ctx, chartArea } = chartCtx.chart;
+        if (!chartArea) return '#ef4444';
+        const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+        g.addColorStop(0, '#ef4444'); // rojo
+        g.addColorStop(1, '#16a34a'); // verde
+        return g;
+      }
+      if (/(uva|grape|uvas)/.test(l)) return '#7c3aed';               // morado
+      if (/(mandarina)/.test(l)) return '#fb923c';                    // naranja vivo
+      if (/(naranja)/.test(l)) return '#fdba74';                      // naranja claro
+      if (/(pera)/.test(l)) return '#84cc16';                         // verde lima
+      if (/(papaya)/.test(l)) return '#f97316';                       // anaranjado
+      if (/(melon|melo[óo]n)/.test(l)) return '#22c55e';              // verde melón
+      if (/(fresa|strawberry)/.test(l)) return '#f43f5e';             // rojo fresa
+      if (/(arandano|arándano|blueberry)/.test(l)) return '#3b82f6';  // azul
+      if (/(limon|limón)/.test(l)) return '#a3e635';                  // verde limón
+
+      // verduras
+      if (/(tomate)/.test(l)) return '#ef4444';
+      if (/(lechuga|espinaca|acelga)/.test(l)) return '#16a34a';
+      if (/(zanahoria|carrot)/.test(l)) return '#f59e0b';
+      if (/(pimiento|piment[óo]n)/.test(l)) return '#ef4444';
+      if (/(pepino|cucumber)/.test(l)) return '#16a34a';
+      if (/(brocoli|br[óo]coli|cabbage)/.test(l)) return '#10b981';
+
+      // fallback paleta profesional (verdes/teales)
+      const palette = ['#0ea5e9','#14b8a6','#10b981','#34d399','#6ee7b7','#a7f3d0','#86efac'];
+      const i = Math.abs(hashCode(l)) % palette.length;
+      return palette[i];
+    }
+
+    function hashCode(str) {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash |= 0;
+      }
+      return hash;
+    }
+
+    // Componente Chart.js con altura compacta
+    function ChartCanvas({ type = 'line', data, options, height = 220 }) {
       const canvasRef = useRef(null);
       const chartRef = useRef(null);
 
@@ -46,18 +96,19 @@
         chartRef.current = new Chart(ctx, {
           type,
           data,
-          options: options || { responsive: true }
+          options: {
+            maintainAspectRatio: false,
+            ...options,
+          },
         });
-        return () => {
-          if (chartRef.current) chartRef.current.destroy();
-        };
+        return () => chartRef.current && chartRef.current.destroy();
       }, [JSON.stringify(data), JSON.stringify(options), type]);
 
-      return <canvas ref={canvasRef} className="w-full h-64"></canvas>;
+      return <div style={{height}}><canvas ref={canvasRef} className="w-full"></canvas></div>;
     }
 
     function App() {
-      // Estado principal
+      // Estado
       const [state, setState] = useState(() => {
         const saved = localStorage.getItem('planificadorCompras_v3');
         if (saved) {
@@ -104,13 +155,13 @@
         localStorage.setItem('planificadorCompras_v3', JSON.stringify(next));
         setSavedToast(true);
         clearTimeout(saveState._t);
-        saveState._t = setTimeout(() => setSavedToast(false), 2000);
+        saveState._t = setTimeout(() => setSavedToast(false), 1800);
       };
 
       // ---- Lógica de negocio ----
       const findBestPrice = (producto) => {
-        const norm = normalizeString(producto);
-        const relevant = state.precios.filter(p => normalizeString(p.producto) === norm);
+        const norm = normalize(producto);
+        const relevant = state.precios.filter(p => normalize(p.producto) === norm);
         if (!relevant.length) return { tienda: null, precioUnitario: null };
         const best = relevant.reduce((b, cur) => {
           const curU = (Number(cur.cantidad) > 0) ? Number(cur.precioTotal) / Number(cur.cantidad) : Infinity;
@@ -121,14 +172,10 @@
         return { tienda: best.tienda, precioUnitario };
       };
 
-      const calculateTotalEstimado = () => {
-        return state.listaCompras.reduce((sum, item) => {
-          const { precioUnitario } = findBestPrice(item.producto);
-          const cantidad = Number(item.cantidad) || 0;
-          const precio = Number(precioUnitario) || 0;
-          return sum + cantidad * precio;
-        }, 0);
-      };
+      const calculateTotalEstimado = () => state.listaCompras.reduce((sum, item) => {
+        const { precioUnitario } = findBestPrice(item.producto);
+        return sum + (Number(item.cantidad) || 0) * (Number(precioUnitario) || 0);
+      }, 0);
 
       const calculateGastoReal = () => {
         const sevenDaysAgo = new Date();
@@ -151,14 +198,14 @@
         return { cls: 'bg-green-100 text-green-800', text: 'OK' };
       };
 
-      // ---- Datos para gráficos ----
+      // ---- Gráficos (compactos y profesionales) ----
       const last7Dates = () => Array.from({ length: 7 }, (_, i) => {
         const d = new Date();
         d.setDate(d.getDate() - (6 - i));
         return d.toISOString().split('T')[0];
       });
 
-      const chartDataLine = (() => {
+      const chartDataLine = useMemo(() => {
         const days = last7Dates();
         const gastos = days.map(date =>
           state.precios.filter(p => p.fecha === date)
@@ -170,35 +217,88 @@
             label: 'Gastos Diarios (S/)',
             data: gastos,
             borderColor: '#10b981',
-            backgroundColor: 'rgba(16,185,129,0.15)',
-            tension: 0.4,
-            fill: true
+            backgroundColor: 'rgba(16,185,129,0.12)',
+            tension: 0.35,
+            fill: true,
+            pointRadius: 2.5,
           }]
         };
-      })();
+      }, [state.precios]);
 
-      const chartDataBar = (() => {
+      const chartOptsLine = {
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => formatCurrency(ctx.parsed.y),
+            }
+          }
+        },
+        scales: {
+          y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.06)' } },
+          x: { grid: { display: false } }
+        }
+      };
+
+      // dataset de barras con color por producto (scriptable)
+      const productosMap = useMemo(() => {
         const map = {};
         state.precios.forEach(pr => {
           const key = (pr.producto || 'Sin nombre').trim();
           map[key] = (map[key] || 0) + Number(pr.precioTotal || 0);
         });
-        return {
-          labels: Object.keys(map),
-          datasets: [{
-            label: 'Gasto por Producto (S/)',
-            data: Object.values(map),
-            backgroundColor: ['#10b981','#34d399','#6ee7b7','#a7f3d0','#059669','#047857','#065f46']
-          }]
-        };
-      })();
+        return map;
+      }, [state.precios]);
+
+      const labelsBar = Object.keys(productosMap);
+      const dataBar = Object.values(productosMap);
+
+      const chartDataBar = {
+        labels: labelsBar,
+        datasets: [{
+          label: 'Gasto por Producto (S/)',
+          data: dataBar,
+          // Scriptable backgroundColor según etiqueta
+          backgroundColor: (ctx) => {
+            const label = ctx.chart.data.labels[ctx.dataIndex];
+            return getColorForProduct(label, ctx);
+          },
+          borderColor: 'rgba(0,0,0,0.08)',
+          borderWidth: 1,
+          borderRadius: 6,
+          borderSkipped: false,
+          maxBarThickness: 36
+        }]
+      };
+
+      const chartOptsBar = {
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => formatCurrency(ctx.parsed.y),
+            }
+          }
+        },
+        scales: {
+          y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.06)' } },
+          x: { grid: { display: false } }
+        }
+      };
+
+      // Interpretación rápida: Top 5 productos por gasto
+      const topProductos = useMemo(() => {
+        return Object.entries(productosMap)
+          .sort((a,b) => b[1]-a[1])
+          .slice(0,5);
+      }, [productosMap]);
 
       // ---- Derivados ----
       const totalEstimado = calculateTotalEstimado();
       const gastoReal = calculateGastoReal();
       const ahorroEstimado = Math.max(0, Number(state.presupuesto || 0) - totalEstimado);
 
-      // ---- Handlers de listas ----
+      // ---- CRUD helpers ----
       const updateItem = (listName, id, field, value) => {
         const list = [...state[listName]];
         const idx = list.findIndex(x => x.id === id);
@@ -215,7 +315,7 @@
         saveState({ ...state, [listName]: [...list, { id: newId, ...defaults }] });
       };
 
-      // ---- Exportar / Importar / Limpiar ----
+      // ---- Export/Import ----
       const exportData = () => {
         const dataStr = JSON.stringify(state, null, 2);
         const blob = new Blob([dataStr], { type: 'application/json' });
@@ -250,7 +350,6 @@
           }
         };
         reader.readAsText(file);
-        // reset
         e.target.value = '';
       };
 
@@ -264,7 +363,6 @@
       // ---- UI ----
       return (
         <div className="container mx-auto p-4 md:p-8">
-          {/* Toast de guardado */}
           {savedToast && (
             <div className="fixed top-4 right-4 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-pulse">
               ✅ Datos guardados en el navegador
@@ -272,34 +370,34 @@
           )}
 
           {/* Header */}
-          <header className="text-center mb-8">
-            <div className="flex items-center justify-center gap-3 mb-4">
+          <header className="text-center mb-6 md:mb-8">
+            <div className="flex items-center justify-center gap-3 mb-3 md:mb-4">
               <div className="p-3 bg-gradient-to-br from-green-500 to-emerald-500 rounded-full shadow-lg">
                 <span className="text-white text-2xl">🌿</span>
               </div>
-              <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-green-700 to-emerald-700 bg-clip-text text-transparent">
+              <h1 className="text-3xl md:text-5xl font-bold bg-gradient-to-r from-green-700 to-emerald-700 bg-clip-text text-transparent">
                 Planificador Saludable
               </h1>
             </div>
-            <p className="text-lg text-green-800/80">Optimiza tus compras, come más fresco y reduce el desperdicio.</p>
+            <p className="text-base md:text-lg text-green-800/80">Optimiza tus compras, come más fresco y reduce el desperdicio.</p>
 
-            <div className="flex flex-wrap justify-center gap-3 mt-6">
-              <button onClick={exportData} className="px-4 py-2 border rounded-lg border-emerald-300 hover:bg-emerald-100/50 hover:text-emerald-800 shadow-sm">
+            <div className="flex flex-wrap justify-center gap-2 md:gap-3 mt-4">
+              <button onClick={exportData} className="px-3 py-2 md:px-4 md:py-2 border rounded-lg border-emerald-300 hover:bg-emerald-100/50 hover:text-emerald-800 shadow-sm">
                 ⬇️ Exportar Datos
               </button>
-              <button onClick={onPickFile} className="px-4 py-2 border rounded-lg border-emerald-300 hover:bg-emerald-100/50 hover:text-emerald-800 shadow-sm">
+              <button onClick={onPickFile} className="px-3 py-2 md:px-4 md:py-2 border rounded-lg border-emerald-300 hover:bg-emerald-100/50 hover:text-emerald-800 shadow-sm">
                 ⬆️ Importar Datos
               </button>
               <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={onImportFile} />
-              <button onClick={clearAll} className="px-4 py-2 border rounded-lg border-red-300 text-red-600 hover:bg-red-100/50 hover:text-red-700 shadow-sm">
+              <button onClick={clearAll} className="px-3 py-2 md:px-4 md:py-2 border rounded-lg border-red-300 text-red-600 hover:bg-red-100/50 hover:text-red-700 shadow-sm">
                 🗑️ Limpiar Todo
               </button>
             </div>
           </header>
 
-          {/* Tabs */}
+          {/* Tabs compactos */}
           <div className="w-full">
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 bg-white/60 backdrop-blur-sm rounded-xl p-2 shadow-inner mb-6">
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 bg-white/60 backdrop-blur-sm rounded-xl p-2 shadow-inner mb-5">
               {['dashboard','lista','precios','inventario','plan','guia'].map(k => (
                 <button
                   key={k}
@@ -320,52 +418,68 @@
 
             {/* === Dashboard === */}
             {tab === 'dashboard' && (
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                  {/* Presupuesto */}
-                  <div className="bg-gradient-to-br from-blue-100 to-blue-200 border border-blue-200 rounded-xl p-4 shadow">
-                    <div className="text-sm font-medium text-blue-800 mb-1">Presupuesto Semanal</div>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-bold text-blue-700">S/</span>
+              <div className="space-y-5">
+                {/* Métricas compactas */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white/80 border border-blue-200 rounded-xl p-3 shadow-sm">
+                    <div className="text-xs md:text-sm font-medium text-blue-800 mb-1">Presupuesto Semanal</div>
+                    <div className="flex items-baseline gap-1 md:gap-2">
+                      <span className="text-xl md:text-2xl font-bold text-blue-700">S/</span>
                       <input
                         type="number"
                         value={state.presupuesto}
                         onChange={(e) => saveState({ ...state, presupuesto: parseFloat(e.target.value) || 0 })}
-                        className="text-3xl font-bold bg-transparent border-0 p-0 h-auto focus:ring-0 focus:outline-none text-blue-900 w-28"
+                        className="text-2xl md:text-3xl font-bold bg-transparent border-0 p-0 h-auto focus:ring-0 focus:outline-none text-blue-900 w-24 md:w-28"
                       />
                     </div>
                   </div>
 
-                  <div className="bg-gradient-to-br from-green-100 to-green-200 border border-green-200 rounded-xl p-4 shadow">
-                    <div className="text-sm font-medium text-green-800 mb-1">Total Estimado Compra</div>
-                    <div className="text-3xl font-bold text-green-700">{formatCurrency(totalEstimado)}</div>
+                  <div className="bg-white/80 border border-green-200 rounded-xl p-3 shadow-sm">
+                    <div className="text-xs md:text-sm font-medium text-green-800 mb-1">Total Estimado</div>
+                    <div className="text-2xl md:text-3xl font-bold text-green-700">{formatCurrency(calculateTotalEstimado())}</div>
                   </div>
 
-                  <div className="bg-gradient-to-br from-orange-100 to-orange-200 border border-orange-200 rounded-xl p-4 shadow">
-                    <div className="text-sm font-medium text-orange-800 mb-1">Gasto Real (7 días)</div>
-                    <div className="text-3xl font-bold text-orange-700">{formatCurrency(gastoReal)}</div>
+                  <div className="bg-white/80 border border-orange-200 rounded-xl p-3 shadow-sm">
+                    <div className="text-xs md:text-sm font-medium text-orange-800 mb-1">Gasto Real (7 días)</div>
+                    <div className="text-2xl md:text-3xl font-bold text-orange-700">{formatCurrency(calculateGastoReal())}</div>
                   </div>
 
-                  <div className="bg-gradient-to-br from-purple-100 to-purple-200 border border-purple-200 rounded-xl p-4 shadow">
-                    <div className="text-sm font-medium text-purple-800 mb-1">Ahorro Estimado</div>
-                    <div className="text-3xl font-bold text-purple-700">{formatCurrency(ahorroEstimado)}</div>
+                  <div className="bg-white/80 border border-purple-200 rounded-xl p-3 shadow-sm">
+                    <div className="text-xs md:text-sm font-medium text-purple-800 mb-1">Ahorro Estimado</div>
+                    <div className="text-2xl md:text-3xl font-bold text-purple-700">{formatCurrency(ahorroEstimado)}</div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl p-4">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="bg-white/80 backdrop-blur-sm shadow-sm rounded-xl p-3">
                     <div className="text-green-800 font-semibold mb-2">Gastos de los Últimos 7 Días</div>
-                    <ChartCanvas type="line" data={chartDataLine} options={{responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}}/>
+                    <ChartCanvas type="line" data={chartDataLine} options={chartOptsLine} height={220} />
                   </div>
-                  <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl p-4">
-                    <div className="text-green-800 font-semibold mb-2">Gasto por Producto</div>
-                    <ChartCanvas type="bar" data={chartDataBar} options={{responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}}}}/>
+
+                  <div className="bg-white/80 backdrop-blur-sm shadow-sm rounded-xl p-3">
+                    <div className="text-green-800 font-semibold mb-2">Gasto por Producto (colores naturales)</div>
+                    <ChartCanvas type="bar" data={chartDataBar} options={chartOptsBar} height={220} />
+                    {/* Interpretación rápida */}
+                    {topProductos.length > 0 && (
+                      <div className="mt-3">
+                        <div className="text-sm font-semibold text-slate-700 mb-1">Interpretación rápida (Top):</div>
+                        <ul className="text-sm text-slate-600 grid grid-cols-1 md:grid-cols-2 gap-x-6">
+                          {topProductos.map(([prod, val]) => (
+                            <li key={prod} className="flex items-center gap-2 py-0.5">
+                              <span className="inline-block w-3 h-3 rounded" style={{background: getColorForProduct(prod, { chart: { ctx: document.createElement('canvas').getContext('2d'), chartArea: {top:0,bottom:16} } })}}></span>
+                              <span className="truncate">{prod}</span>
+                              <span className="ml-auto font-medium">{formatCurrency(val)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             )}
 
-            {/* === Lista de Compras === */}
+            {/* === Lista === */}
             {tab === 'lista' && (
               <div className="bg-white/70 backdrop-blur-sm shadow rounded-xl">
                 <div className="p-4 border-b">
@@ -373,7 +487,7 @@
                   <div className="text-sm text-slate-600">Total estimado: <span className="font-bold text-green-700">{formatCurrency(totalEstimado)}</span></div>
                 </div>
                 <div className="p-4 overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b-2 border-green-200">
                         <th className="p-3 text-left font-semibold text-green-800">Producto</th>
@@ -391,9 +505,9 @@
                         return (
                           <tr key={item.id} className="border-b border-green-100 hover:bg-green-100/50 transition-colors">
                             <td className="p-2">
-                              <input value={item.producto} onChange={(e) => updateItem('listaCompras', item.id, 'producto', e.target.value)} className="border border-green-200 rounded px-2 py-1 w-44 focus:outline-none focus:ring-1 focus:ring-green-400"/>
+                              <input value={item.producto} onChange={(e) => updateItem('listaCompras', item.id, 'producto', e.target.value)} className="border border-green-200 rounded px-2 py-1 w-40 md:w-48 focus:outline-none focus:ring-1 focus:ring-green-400"/>
                             </td>
-                            <td className="p-2 w-32">
+                            <td className="p-2 w-28">
                               <input type="number" step="0.1" value={item.cantidad} onChange={(e) => updateItem('listaCompras', item.id, 'cantidad', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 w-24 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/>
                             </td>
                             <td className="p-3 text-green-700 font-medium">{tienda || 'N/A'}</td>
@@ -424,7 +538,7 @@
                   <div className="text-sm text-slate-600">Registra tus compras para encontrar siempre los mejores precios y alimentar los gráficos.</div>
                 </div>
                 <div className="p-4 overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full text-sm">
                     <thead className="border-b-2 border-green-200">
                       <tr>
                         <th className="p-3 text-left font-semibold text-green-800">Fecha</th>
@@ -446,8 +560,8 @@
                             <td className="p-2"><input value={item.tienda} onChange={(e) => updateItem('precios', item.id, 'tienda', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
                             <td className="p-2"><input value={item.producto} onChange={(e) => updateItem('precios', item.id, 'producto', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
                             <td className="p-2 w-28"><input value={item.unidad} onChange={(e) => updateItem('precios', item.id, 'unidad', e.target.value)} className="border border-green-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
-                            <td className="p-2 w-32"><input type="number" step="0.1" value={item.cantidad} onChange={(e) => updateItem('precios', item.id, 'cantidad', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
-                            <td className="p-2 w-32"><input type="number" step="0.01" value={item.precioTotal} onChange={(e) => updateItem('precios', item.id, 'precioTotal', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2 w-28"><input type="number" step="0.1" value={item.cantidad} onChange={(e) => updateItem('precios', item.id, 'cantidad', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
+                            <td className="p-2 w-28"><input type="number" step="0.01" value={item.precioTotal} onChange={(e) => updateItem('precios', item.id, 'precioTotal', parseFloat(e.target.value) || 0)} className="border border-green-200 rounded px-2 py-1 text-right focus:outline-none focus:ring-1 focus:ring-green-400"/></td>
                             <td className="p-3 text-right font-bold text-green-600">{formatCurrency(precioUnitario)}</td>
                             <td className="p-2 text-center"><button onClick={() => deleteItem('precios', item.id)} className="text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-100">Eliminar</button></td>
                           </tr>
@@ -472,7 +586,7 @@
                   <div className="text-sm text-slate-600">Lleva un control de lo que tienes para evitar comprar de más y reducir el desperdicio.</div>
                 </div>
                 <div className="p-4 overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full text-sm">
                     <thead className="border-b-2 border-green-200">
                       <tr>
                         <th className="p-3 text-left font-semibold text-green-800">Producto</th>
@@ -519,7 +633,7 @@
                   <div className="text-sm text-slate-600">Organiza tus comidas para saber exactamente qué necesitas comprar.</div>
                 </div>
                 <div className="p-4 overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full text-sm">
                     <thead className="border-b-2 border-green-200">
                       <tr>
                         <th className="p-3 text-left font-semibold text-green-800">Día</th>
@@ -595,3 +709,8 @@
   </script>
 </body>
 </html>
+"""
+with open('/mnt/data/planificador_compras_colores.html', 'w', encoding='utf-8') as f:
+    f.write(html)
+
+print("Archivo HTML con colores por producto generado: /mnt/data/planificador_compras_colores.html")
